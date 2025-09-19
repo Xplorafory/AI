@@ -1,0 +1,85 @@
+﻿services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: xploraforys_pg
+    restart: unless-stopped
+    env_file:
+      - infra.env
+    ports:
+      - "${PGPORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER} -d ${PGDATABASE} -h localhost"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: pgvector/pgvector:pg16
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - infra.env
+    entrypoint: ["bash","-lc"]
+    command: >
+      psql -h db -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 <<'SQL'
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+      -- 3072-dim (OpenAI text-embedding-3-large)
+      CREATE TABLE IF NOT EXISTS kb_chunks (
+        id TEXT PRIMARY KEY,
+        content TEXT,
+        embedding vector(3072),
+        source TEXT,
+        title TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      -- 1536-dim (OpenAI text-embedding-3-small)
+      CREATE TABLE IF NOT EXISTS kb_chunks_1536 (
+        id TEXT PRIMARY KEY,
+        content TEXT,
+        embedding vector(1536),
+        source TEXT,
+        title TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      -- 384-dim (Local MiniLM)
+      CREATE TABLE IF NOT EXISTS kb_chunks_384 (
+        id TEXT PRIMARY KEY,
+        content TEXT,
+        embedding vector(384),
+        source TEXT,
+        title TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      -- Index (skapa gärna efter att du har >1k rader för bättre recall)
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='idx_kb_chunks_embedding') THEN
+          CREATE INDEX idx_kb_chunks_embedding
+            ON kb_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='idx_kb_chunks_1536') THEN
+          CREATE INDEX idx_kb_chunks_1536
+            ON kb_chunks_1536 USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='idx_kb_chunks_384') THEN
+          CREATE INDEX idx_kb_chunks_384
+            ON kb_chunks_384 USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+        END IF;
+      END$$;
+      SQL
+
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:

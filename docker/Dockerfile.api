@@ -1,0 +1,27 @@
+# --- docker/Dockerfile.api ---
+FROM python:3.10-slim
+
+# Systempaket som behövs för psycopg2 och tesseract (lätta)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+# Arbetskatalog
+WORKDIR /app
+
+# Snabbare build: kopiera bara krav först
+COPY docker/requirements.api.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Kopiera koden
+COPY . /app
+
+# Miljö (port kan överskridas av Azure)
+ENV PORT=8000
+
+# Exponera port
+EXPOSE 8000
+
+# Starta FastAPI
+CMD ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

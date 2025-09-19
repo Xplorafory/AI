@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+openai>=1.40.0
+psycopg2-binary
+python-dotenv
+numpy
+tiktoken
+sentence-transformers
+pypdf
+python-pptx
+python-docx
+webvtt-py
+srt
