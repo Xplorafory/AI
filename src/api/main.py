@@ -9,6 +9,17 @@ from pydantic import BaseModel
 from dotenv import load_dotenv, find_dotenv
 import psycopg2
 from psycopg2 import sql
+
+app = FastAPI()
+
+def check_auth():
+    return True
+
+@app.get("/healthz", dependencies=[Depends(check_auth)])
+def healthz():
+    return {"ok": True}
+
+
 # ---------------------------
 # Env loading (.env + infra/)
 # ---------------------------
