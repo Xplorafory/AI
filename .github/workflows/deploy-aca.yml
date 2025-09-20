@@ -1,0 +1,101 @@
+name: Build & Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "docker/**"
+      - "src/**"
+      - "requirements*.txt"
+      - ".github/workflows/deploy-aca.yml"
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: xplora-rag-api
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  RESOURCE_GROUP: ${{ secrets.AZ_RESOURCE_GROUP }}
+  CONTAINERAPP_NAME: ${{ secrets.CONTAINERAPP_NAME }}
+  REGION: ${{ secrets.AZ_REGION }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Azure CLI version
+        run: az version
+
+      - name: Ensure containerapp extension
+        run: |
+          az extension add --name containerapp --upgrade || az extension update --name containerapp
+
+      - name: ACR login
+        run: az acr login --name $ACR_NAME
+
+      - name: Build & push image to ACR (tagged by SHA and 'latest')
+        run: |
+          IMAGE_SHA=${ACR_LOGIN_SERVER}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          IMAGE_LATEST=${ACR_LOGIN_SERVER}/${{ env.IMAGE_NAME }}:latest
+          # Build
+          az acr build \
+            -r $ACR_NAME \
+            -t $IMAGE_SHA \
+            -t $IMAGE_LATEST \
+            -f docker/Dockerfile.api .
+          echo "IMAGE_SHA=$IMAGE_SHA" >> $GITHUB_ENV
+
+      # (Optional) set/update secrets on the Container App from GitHub Secrets
+      # Skip these two steps if you already set 'pg-dsn' and 'openai-api-key' in Azure and don't want Actions to override them.
+      - name: Update container app secrets (optional)
+        if: ${{ secrets.OPENAI_API_KEY != '' || secrets.PG_DSN != '' }}
+        run: |
+          SECRET_ARGS=""
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            SECRET_ARGS="$SECRET_ARGS openai-api-key='${{ secrets.OPENAI_API_KEY }}'"
+          fi
+          if [ -n "${{ secrets.PG_DSN }}" ]; then
+            SECRET_ARGS="$SECRET_ARGS pg-dsn='${{ secrets.PG_DSN }}'"
+          fi
+          if [ -n "$SECRET_ARGS" ]; then
+            az containerapp secret set -g $RESOURCE_GROUP -n $CONTAINERAPP_NAME --secrets $SECRET_ARGS
+          fi
+
+      - name: Point the Container App to the new image
+        run: |
+          az containerapp update \
+            -g $RESOURCE_GROUP \
+            -n $CONTAINERAPP_NAME \
+            --image $IMAGE_SHA
+
+      # (Optional) ensure env vars reference secrets (only needed once or when changing)
+      - name: Ensure env vars map to secrets (optional)
+        run: |
+          az containerapp update \
+            -g $RESOURCE_GROUP \
+            -n $CONTAINERAPP_NAME \
+            --set-env-vars "OPENAI_API_KEY=secretref:openai-api-key" "PG_DSN=secretref:pg-dsn"
+
+      # (Optional) enforce ingress target-port (only needed once or when changing)
+      - name: Ensure ingress is correct (optional)
+        run: |
+          # Your app listens on 8000 (uvicorn) – set target-port 8000.
+          az containerapp ingress enable \
+            -g $RESOURCE_GROUP \
+            -n $CONTAINERAPP_NAME \
+            --external \
+            --target-port 8000 \
+            --transport auto
+
+      - name: Show deployed revision + FQDN
+        run: |
+          az containerapp show -g $RESOURCE_GROUP -n $CONTAINERAPP_NAME --query "properties.configuration.ingress.fqdn" -o tsv
+          az containerapp revision list -g $RESOURCE_GROUP -n $CONTAINERAPP_NAME --query "[?properties.active==\`true\`].name" -o tsv
